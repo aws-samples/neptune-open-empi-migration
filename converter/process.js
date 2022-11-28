@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
+
 // EXAMPLE command:
 //    node process.js source-data/orientdb-export-pets-db.gz pets
 //         ^ this     ^ orient export json-gzipped           ^ simple name for dataset
