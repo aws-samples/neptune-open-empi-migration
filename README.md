@@ -1,17 +1,2 @@
-## My Project
-
-TODO: Fill this README out!
-
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
-
-## Security
-
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
-
-## License
-
-This library is licensed under the MIT-0 License. See the LICENSE file.
-
+run `npm install` to install dependencies
+run `node process.js my_orient_export.gz class01` to generate csv file, where my_orient_export.gz is your orient export file, gzipped, and where class01 is the name of your entity that is represented in that export.

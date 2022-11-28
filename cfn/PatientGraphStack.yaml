@@ -1,0 +1,268 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Companion infrastructure for the patient EMPI migration blog
+Parameters:
+  Env:
+    Description: "Environment tag, e.g. prod, nonprod."
+    Default: test
+    Type: String
+    AllowedPattern: "[a-z0-9]+"
+    MaxLength: 15
+  DbInstanceType:
+    Description: Neptune DB instance type
+    Type: String
+    Default: db.r5.2xlarge
+    AllowedValues:
+      - db.t3.medium
+      - db.r4.large
+      - db.r4.xlarge
+      - db.r4.2xlarge
+      - db.r4.4xlarge
+      - db.r4.8xlarge
+      - db.r5.large
+      - db.r5.xlarge
+      - db.r5.2xlarge
+      - db.r5.4xlarge
+      - db.r5.8xlarge
+      - db.r5.12xlarge
+    ConstraintDescription: >-
+      Must be a valid Neptune instance type. Note that for Stockholm and OSU
+      only R5 and T3 instances are available.
+  IamAuthEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enable IAM Auth for Neptune.
+  NotebookInstanceType:
+    Description: >-
+      SageMaker Notebook instance type. Please refer
+      https://aws.amazon.com/sagemaker/pricing/ for uptodate allowed instance
+      type in aws region and https://aws.amazon.com/neptune/pricing/ for
+      pricing.
+    Type: String
+    Default: ml.t3.medium
+    AllowedValues:
+      - ml.t2.medium
+      - ml.t2.large
+      - ml.t2.xlarge
+      - ml.t2.2xlarge
+      - ml.t3.medium
+      - ml.m4.xlarge
+      - ml.m4.2xlarge
+      - ml.m4.4xlarge
+      - ml.m4.10xlarge
+      - ml.m4.16xlarge
+      - ml.m5.large
+      - ml.m5.xlarge
+      - ml.m5.2xlarge
+      - ml.m5.4xlarge
+      - ml.m5.12xlarge
+      - ml.m5.24xlarge
+      - ml.m5d.large
+      - ml.m5d.xlarge
+      - ml.m5d.2xlarge
+      - ml.m5d.4xlarge
+      - ml.m5d.12xlarge
+      - ml.m5d.24xlarge
+      - ml.c4.large
+      - ml.c4.xlarge
+      - ml.c4.2xlarge
+      - ml.c4.4xlarge
+      - ml.c4.8xlarge
+    ConstraintDescription: Must be a valid SageMaker instance type.
+
+Resources:
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete 
+    Properties:
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256' 
+
+  NeptuneStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: "https://aws-neptune-customer-samples.s3.amazonaws.com/v2/cloudformation-templates/neptune-full-stack-nested-template.json"
+      TimeoutInMinutes: "60"
+      Parameters:
+        DbInstanceType: !Ref DbInstanceType
+        Env: !Ref Env
+        IamAuthEnabled: !Ref IamAuthEnabled
+        EC2ClientInstanceType: none
+        NotebookInstanceType: !Ref NotebookInstanceType
+        NeptuneSagemakerNotebookStartupScript: !GetAtt Repo2S3.NotebookAddScript 
+    DependsOn: Repo2S3
+
+  Repo2S3:
+    Type: 'Custom::EnvSetup'
+    DependsOn: AWSLambdaExecutionRole
+    Properties:
+      ServiceToken: !GetAtt Repo2S3Func.Arn
+      s3_bucket: !Ref S3Bucket
+      source_repo_slash: "https://raw.githubusercontent.com/aws-samples/amazon-neptune-ontology-example-blog/main/"
+
+  Repo2S3Func:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: "Repo2S3Func"
+      FunctionName: !Sub "Repo2S3Func-lambda-${AWS::StackName}"
+      Handler: index.lambda_handler
+      Role: !GetAtt AWSLambdaExecutionRole.Arn
+      Timeout: 360
+      Runtime: python3.9
+      Code:
+        ZipFile: |
+          import json
+          import urllib3
+          import boto3
+          import cfnresponse
+
+          http = urllib3.PoolManager()
+          DATA_FILES = [
+            "data/patients-identifier-edge.txt.gz",
+            "data/patients-identifier-vertex.txt.gz",
+            "data/patients-patient-vertex.txt.gz",
+            "data/patients-recordLink-edge.txt.gz"
+          ]
+          NOTEBOOK_FILE_PREFIX = "Patient_EMPI_Notebook"
+          NOTEBOOK_FILE = "notebook/" + NOTEBOOK_FILE_PREFIX + ".ipynb"
+
+          def copy_web_s3(url, s3_client, bucket, key):
+            the_file = http.request('GET', url, preload_content=False)
+            print("Got file")
+            local_file_name = '/tmp/' + key
+            print("local file " + local_file_name)
+            local_file = open(local_file_name, 'wb')
+            local_file.write(the_file.data)
+            local_file.close()
+            s3_client.upload_file(Bucket = bucket, Key = key, Filename = local_file_name, ExtraArgs={"ServerSideEncryption": "AES256"})
+            print("S3 done " + url + " " + bucket + " " + key )
+
+          def lambda_handler(event, context):
+            the_event = event['RequestType']
+            print(event)
+            print("The event type is: ", str(the_event))
+            response_data = {}
+            try:
+              s3_bucket = event['ResourceProperties']['s3_bucket']
+              if the_event in ('Create', 'Update'):
+                source_repo= event['ResourceProperties']['source_repo']
+                s3c = boto3.client('s3')
+                print("Creating/Updating")
+                copy_web_s3(source_repo_slash + NOTEBOOK_FILE, s3c, s3_bucket, key)
+                for key in REPO_CONTENTS:
+                  path = source_repo + REPO_CONTENTS[key]
+                  copy_web_s3(source_repo_slash + key, s3c, s3_bucket, key)
+                response_data['Data'] = 'git success'
+                response_data['NotebookAddScript'] =  f"export S3_BUCKET={s3_bucket}\n"
+                response_data['NotebookAddScript'] +=  f"if [ ! -f /home/ec2-user/SageMaker/{s3_bucket}_Orig.ipynb ]\n"
+                response_data['NotebookAddScript'] += f"then\n"
+                response_data['NotebookAddScript'] += f"  aws s3 cp s3://{s3_bucket}/{NOTEBOOK_FILE_PREFIX}.ipynb /home/ec2-user/SageMaker/{NOTEBOOK_FILE_PREFIX}_Orig.ipynb\n"
+                response_data['NotebookAddScript'] += f"    cat /home/ec2-user/SageMaker/{NOTEBOOK_FILE_PREFIX}_Orig.ipynb | sed s/__S3_BUCKET__/{s3_bucket}/g > /home/ec2-user/SageMaker/{NOTEBOOK_FILE_PREFIX}.ipynb\n"
+                response_data['NotebookAddScript'] += f"fi\n"
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+              elif the_event in ('Delete'):
+                print("Deleting")
+                s3r = boto3.resource('s3')
+                s3r.Bucket(str(s3_bucket)).objects.all().delete()
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+              else:
+                response_data['Data'] = "Illegal event " + the_event
+                cfnresponse.send(event, context, cfnresponse.FAILED, response_data)
+            except Exception as e:
+              print("Operation failed...")
+              print(str(e))
+              response_data['Data'] = str(e)
+              cfnresponse.send(event, context, cfnresponse.FAILED, response_data)
+
+  AWSLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+        Version: "2012-10-17"
+      Path: "/"
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource: arn:aws:logs:*:*:*
+            Version: "2012-10-17"
+          PolicyName: !Sub "Repo2S3pol-CW-${AWS::StackName}"
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:List*
+                Effect: Allow
+                Resource:
+                  - !Sub arn:aws:s3:::${S3Bucket}/*
+                  - !Sub arn:aws:s3:::${S3Bucket}
+            Version: "2012-10-17"
+          PolicyName: !Sub "Repo2S3pol-S3-${AWS::StackName}"
+      RoleName: !Sub "Repo2S3role-${AWS::StackName}"
+
+Outputs:
+  S3Bucket:
+    Value: !Ref S3Bucket
+  DBClusterEndpoint:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.DBClusterEndpoint
+  DBClusterId:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.DBClusterId
+  DBClusterPort:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.DBClusterPort
+  DBClusterResourceId:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.DBClusterResourceId
+  NeptuneLoadFromS3IAMRoleArn:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.NeptuneLoadFromS3IAMRoleArn
+  NeptuneSagemakerNotebook:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.NeptuneSagemakerNotebook
+  Subnet1:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.Subnet1
+  Subnet2:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.Subnet2
+  Subnet3:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.Subnet3
+  Subnet4:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.Subnet4
+  VPC:
+    Value: !GetAtt
+      - NeptuneStack
+      - Outputs.VPC
+
