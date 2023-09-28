@@ -167,7 +167,7 @@ Resources:
                 print("Creating/Updating")
                 for folder in DATA_FILES:
                   for filename in DATA_FILES[folder]:
-                    copy_web_s3("https://github.com/aws-samples/neptune-open-empi-migration", s3c, target_bucket, folder, filename)
+                    copy_web_s3("https://raw.githubusercontent.com/aws-samples/neptune-open-empi-migration", s3c, target_bucket, folder, filename)
 
                 response_data['Data'] = 'git success'
                 response_data['NotebookAddScript'] =  f'echo "export S3_SOURCE_BUCKET={target_bucket}" >> ~/.bashrc\n'
