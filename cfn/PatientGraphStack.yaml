@@ -3,9 +3,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: Companion infrastructure for the patient EMPI migration blog
 Parameters:
-  InterimSourceBucket:
-    Description: "TO BE REMOVED. Until repo is public, we need to put our artifacts somewhere. create this in the same account and region."
-    Type: String
   Env:
     Description: "Environment tag, e.g. prod, nonprod."
     Default: test
@@ -13,16 +10,16 @@ Parameters:
     AllowedPattern: "[a-z0-9]+"
     MaxLength: 15
   DbInstanceType:
-    Description: Neptune DB instance type
+    Description: Neptune DB instance type. Choose instance type suitable to data size. 
     Type: String
-    Default: db.r5.2xlarge
+    Default: db.serverless
     AllowedValues:
-      - db.t3.medium
-      - db.r4.large
-      - db.r4.xlarge
-      - db.r4.2xlarge
-      - db.r4.4xlarge
-      - db.r4.8xlarge
+      - db.serverless
+      - db.r6g.large
+      - db.r6g.xlarge
+      - db.r6g.2xlarge
+      - db.r6g.4xlarge
+      - db.r6g.8xlarge
       - db.r5.large
       - db.r5.xlarge
       - db.r5.2xlarge
@@ -41,10 +38,7 @@ Parameters:
     Description: Enable IAM Auth for Neptune.
   NotebookInstanceType:
     Description: >-
-      SageMaker Notebook instance type. Please refer
-      https://aws.amazon.com/sagemaker/pricing/ for uptodate allowed instance
-      type in aws region and https://aws.amazon.com/neptune/pricing/ for
-      pricing.
+      SageMaker Notebook instance type. Choose instance type suitable to data size. 
     Type: String
     Default: ml.t3.medium
     AllowedValues:
@@ -87,6 +81,13 @@ Resources:
           ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: 'AES256' 
+        Tags:
+          - Key: demoname
+            Value: empi
+          - Key: empi-env
+            Value: !Ref Env
+          - Key: empi-stack
+            Value: !Ref "AWS::StackName"
 
   NeptuneStack:
     Type: "AWS::CloudFormation::Stack"
@@ -94,12 +95,14 @@ Resources:
       TemplateURL: "https://aws-neptune-customer-samples.s3.amazonaws.com/v2/cloudformation-templates/neptune-full-stack-nested-template.json"
       TimeoutInMinutes: "60"
       Parameters:
+        DBClusterId: !Join [ "-", ["empi", !Join [ "", !Split [ "-", !Select [ 2,  !Split [ "/", !Ref AWS::StackId ] ] ] ] ] ]
         DbInstanceType: !Ref DbInstanceType
         Env: !Ref Env
         IamAuthEnabled: !Ref IamAuthEnabled
         EC2ClientInstanceType: none
         NotebookInstanceType: !Ref NotebookInstanceType
         NeptuneSagemakerNotebookStartupScript:  !GetAtt Repo2S3.NotebookAddScript 
+        NeptuneEnableAuditLog: 1
     DependsOn: Repo2S3
 
   Repo2S3:
@@ -108,7 +111,6 @@ Resources:
     Properties:
       ServiceToken: !GetAtt Repo2S3Func.Arn
       s3_bucket: !Ref S3Bucket
-      s3_source_bucket: !Ref InterimSourceBucket
 
   Repo2S3Func:
     Type: "AWS::Lambda::Function"
@@ -118,6 +120,13 @@ Resources:
       Handler: index.lambda_handler
       Role: !GetAtt AWSLambdaExecutionRole.Arn
       Timeout: 360
+      Tags:
+        - Key: demoname
+          Value: empi
+        - Key: empi-env
+          Value: !Ref Env
+        - Key: empi-stack
+          Value: !Ref "AWS::StackName"
       Runtime: python3.9
       Code:
         ZipFile: |
@@ -133,20 +142,17 @@ Resources:
             "notebook": ["Patient_EMPI_Graph.ipynb"] 
           }
 
-          def copy_s3_s3(s3_client, source_bucket, target_bucket, folder, key):
-            s3_path = folder+"/"+key
-            local_path = "/tmp/" + key
-            s3_client.download_file(source_bucket, s3_path, local_path)
-            s3_client.upload_file(Bucket = target_bucket, Key = s3_path, Filename = local_path, ExtraArgs={"ServerSideEncryption": "AES256"})
-
           def copy_web_s3(url, s3_client, bucket, folder, key):
             s3_path = folder+"/"+key
             local_path = "/tmp/" + key
-            the_file = http.request('GET', url + "/" + bucket + "/" + key, preload_content=False)
+            fileurl = url + "/" + folder + "/" + key
+            print("loading web file *" + fileurl + "*")
+            the_file = http.request('GET',fileurl, preload_content=False)
             print("Got file")
             local_file = open(local_path, 'wb')
             local_file.write(the_file.data)
             local_file.close()
+            print("upload *" + s3_path + "*" + local_path + "*")
             s3_client.upload_file(Bucket = bucket, Key = s3_path, Filename = local_path, ExtraArgs={"ServerSideEncryption": "AES256"})
 
           def lambda_handler(event, context):
@@ -156,14 +162,12 @@ Resources:
             response_data = {}
             try:
               target_bucket = event['ResourceProperties']['s3_bucket']
-              source_bucket = event['ResourceProperties']['s3_source_bucket']
               if the_event in ('Create', 'Update'):
                 s3c = boto3.client('s3')
                 print("Creating/Updating")
                 for folder in DATA_FILES:
                   for filename in DATA_FILES[folder]:
-                    copy_s3_s3(s3c, source_bucket, target_bucket, folder, filename)
-                    #copy_web_s3("https://github.com/aws-samples/neptune-open-empi-migration", s3c, target_bucket, folder, filename)
+                    copy_web_s3("https://github.com/aws-samples/neptune-open-empi-migration", s3c, target_bucket, folder, filename)
 
                 response_data['Data'] = 'git success'
                 response_data['NotebookAddScript'] =  f'echo "export S3_SOURCE_BUCKET={target_bucket}" >> ~/.bashrc\n'
@@ -210,7 +214,7 @@ Resources:
                 Effect: Allow
                 Resource: arn:aws:logs:*:*:*
             Version: "2012-10-17"
-          PolicyName: !Sub "Repo2S3pol-CW-${AWS::StackName}"
+          PolicyName: !Sub "Repo2S3pol-CW-${AWS::StackName}-${AWS::AccountId}"
         - PolicyDocument:
             Statement:
               - Action:
@@ -222,11 +226,9 @@ Resources:
                 Resource:
                   - !Sub arn:aws:s3:::${S3Bucket}/*
                   - !Sub arn:aws:s3:::${S3Bucket}
-                  - !Sub arn:aws:s3:::${InterimSourceBucket}/*
-                  - !Sub arn:aws:s3:::${InterimSourceBucket}
             Version: "2012-10-17"
-          PolicyName: !Sub "Repo2S3pol-S3-${AWS::StackName}"
-      RoleName: !Sub "Repo2S3role-${AWS::StackName}"
+          PolicyName: !Sub "Repo2S3pol-S3-${AWS::StackName}-${AWS::AccountId}"
+      RoleName: !Sub "Repo2S3role-${AWS::StackName}-${AWS::AccountId}"
 
 Outputs:
   S3Bucket:
