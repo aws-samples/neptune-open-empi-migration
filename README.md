@@ -41,10 +41,5 @@ To setup this demo in your own AWS account, first clone this repo locally. Alter
 12. When the stack is complete, navigate to the *Outputs* section and follow the link for the output NeptuneSagemakerNotebook. 
 
 This opens a notebook that you use in the remaining steps.
-![image](https://github.com/aws-samples/neptune-open-empi-migration/assets/9324867/b887d450-a4f0-4c91-bddb-0395a8d096cb)
-
-
-
-
 
 It sets up an Amazon Neptune cluster,
